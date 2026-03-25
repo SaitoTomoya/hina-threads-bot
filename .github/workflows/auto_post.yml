@@ -2,37 +2,107 @@ name: Hina Auto Post
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 毎日 JST 9:00 (UTC 0:00)
-  workflow_dispatch:       # 手動実行も可能
+    # 毎日 JST 7:00 と 21:00 に投稿（UTC 22:00 と 12:00）
+    - cron: '0 22 * * *'   # JST 7:00
+    - cron: '0 12 * * *'   # JST 21:00
+    # 毎日 JST 3:00 に新規投稿文生成（UTC 18:00）
+    - cron: '0 18 * * *'   # JST 3:00（深夜にバッチ生成）
+  workflow_dispatch:
+    inputs:
+      command:
+        description: '実行コマンド (post/write/research/analyze/all)'
+        required: false
+        default: 'post'
 
 jobs:
   post:
     runs-on: ubuntu-latest
+    if: github.event.schedule == '0 22 * * *' || github.event.schedule == '0 12 * * *' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.command == 'post' || github.event.inputs.command == 'all'))
 
     steps:
-      - name: リポジトリをチェックアウト
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Python セットアップ
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: 依存関係インストール
-        run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: Threadsに投稿
+      - name: 投稿実行
         env:
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
-        run: python post.py
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python orchestrator.py post
 
-      - name: 投稿履歴をコミット
+      - name: 変更をコミット
         run: |
           git config user.name "hina-bot"
           git config user.email "bot@hina-bot.com"
-          git add posts.json
-          git diff --staged --quiet || git commit -m "投稿完了: $(date +'%Y-%m-%d')"
+          git add data/
+          git diff --staged --quiet || git commit -m "投稿完了: $(date +'%Y-%m-%d %H:%M JST')"
+          git push
+
+  generate:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 18 * * *' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.command == 'write' || github.event.inputs.command == 'all'))
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: リサーチ＋投稿文生成
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python orchestrator.py research
+          python orchestrator.py write
+
+      - name: 変更をコミット
+        run: |
+          git config user.name "hina-bot"
+          git config user.email "bot@hina-bot.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "新規投稿文生成: $(date +'%Y-%m-%d')"
+          git push
+
+  fetch_and_analyze:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.command == 'analyze' || github.event.inputs.command == 'all')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: メトリクス取得＋分析
+        env:
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python orchestrator.py fetch
+          python orchestrator.py analyze
+
+      - name: 変更をコミット
+        run: |
+          git config user.name "hina-bot"
+          git config user.email "bot@hina-bot.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "分析完了: $(date +'%Y-%m-%d')"
           git push
